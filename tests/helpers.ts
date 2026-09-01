@@ -78,10 +78,11 @@ export async function seedCommand(uid: string, overrides: Partial<Record<string,
   return id;
 }
 
-export async function omi(uid: string, sessionId: string, segments: unknown): Promise<Response> {
-  return call(`/webhook/omi?token=test-omi-webhook-token-32-bytes-long&uid=${encodeURIComponent(uid)}&session_id=${encodeURIComponent(sessionId)}`, {
+export async function omi(uid: string, sessionId: string | null, payload: unknown): Promise<Response> {
+  const sessionQuery = sessionId === null ? "" : `&session_id=${encodeURIComponent(sessionId)}`;
+  return call(`/webhook/omi?token=test-omi-webhook-token-32-bytes-long&uid=${encodeURIComponent(uid)}${sessionQuery}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(segments),
+    body: JSON.stringify(payload),
   });
 }
