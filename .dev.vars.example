@@ -1,0 +1,4 @@
+# Copia este archivo como .dev.vars. Nunca subas .dev.vars a Git.
+APP_SECRET=replace-with-at-least-32-random-bytes
+# Obligatorio para esta app privada. Debe coincidir con ?token= de Webhook URL.
+OMI_WEBHOOK_TOKEN=replace-with-an-independent-random-token

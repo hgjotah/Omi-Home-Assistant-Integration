@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+.env*
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+esp32/secrets.h
+tools/fake-bridge.config.json
