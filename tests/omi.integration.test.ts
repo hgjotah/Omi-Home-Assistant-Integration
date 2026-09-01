@@ -1,8 +1,47 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { call, createBridge, login, omi, seedCommand } from "./helpers";
+import { api, call, createBridge, login, omi, seedCommand } from "./helpers";
 
 describe("Omi Real-Time Transcript", () => {
+  it("guarda y ejecuta una orden con una primera palabra personalizada", async () => {
+    const user = await login("omi_custom_prefix");
+    await createBridge(user);
+    const saved = await api(user, "/api/commands", "POST", {
+      phrase: "Jarvis enciende la luz",
+      entity_id: "switch.sonoff_1001fccf20_1",
+      entity_name: "Luz",
+      domain: "switch",
+      service: "turn_on",
+      service_data: {},
+      enabled: true,
+    });
+    expect(saved.status).toBe(201);
+    const stored = await env.DB.prepare("SELECT phrase, normalized_phrase FROM commands WHERE uid = ?")
+      .bind(user.uid)
+      .first<{ phrase: string; normalized_phrase: string }>();
+    expect(stored).toEqual({ phrase: "Jarvis enciende la luz", normalized_phrase: "jarvis enciende la luz" });
+
+    const missingActivation = await omi(user.uid, "custom_prefix_missing", [{ text: "Omi enciende la luz" }]);
+    expect(await missingActivation.json()).toEqual({ ok: true, matched: false, reason: "no_command_match" });
+    const matched = await omi(user.uid, "custom_prefix_match", [{ text: "Jarvis, enciende la luz." }]);
+    expect(await matched.json()).toMatchObject({ ok: true, matched: true, queued: true });
+  });
+
+  it("rechaza una frase que no contiene activación y acción", async () => {
+    const user = await login("omi_invalid_custom_prefix");
+    const response = await api(user, "/api/commands", "POST", {
+      phrase: "Jarvis",
+      entity_id: "light.habitacion",
+      entity_name: "Luz",
+      domain: "light",
+      service: "turn_on",
+      service_data: {},
+      enabled: true,
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ ok: false, error: "El comando debe incluir una palabra de activación y una acción" });
+  });
+
   it("funciona sin session_id y devuelve el job creado", async () => {
     const user = await login("omi_without_session");
     await createBridge(user);

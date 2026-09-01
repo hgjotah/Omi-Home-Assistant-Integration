@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { commandDistance, extractVoiceUnits, matchCommand, normalizeTranscript } from "../src/normalization";
+import { commandDistance, commandPrefix, extractVoiceUnits, matchCommand, normalizeTranscript } from "../src/normalization";
 import type { CommandRow } from "../src/types";
 
 const command: CommandRow = {
   id: "cmd_1", uid: "u", phrase: "Omi enciende la luz", normalized_phrase: "omi enciende la luz",
   entity_id: "light.habitacion", entity_name: "Luz", domain: "light", service: "turn_on", service_data: "{}",
   enabled: 1, created_at: 0, updated_at: 0,
+};
+
+const customCommand: CommandRow = {
+  ...command,
+  id: "cmd_jarvis",
+  phrase: "Jarvis enciende la luz",
+  normalized_phrase: "jarvis enciende la luz",
 };
 
 describe("normalización y matching conservador", () => {
@@ -18,7 +25,14 @@ describe("normalización y matching conservador", () => {
     expect(matchCommand(units, [command])?.command.id).toBe("cmd_1");
   });
 
-  it("no activa sin Omi ni buscando un substring de conversación", () => {
+  it("usa como activación la primera palabra configurada", () => {
+    const units = extractVoiceUnits([{ text: "Jarvis, enciende la luz." }]);
+    expect(commandPrefix(customCommand.normalized_phrase)).toBe("jarvis");
+    expect(matchCommand(units, [customCommand])?.command.id).toBe("cmd_jarvis");
+    expect(matchCommand(extractVoiceUnits([{ text: "Omi enciende la luz" }]), [customCommand])).toBeNull();
+  });
+
+  it("no activa sin la primera palabra configurada ni buscando un substring de conversación", () => {
     expect(matchCommand(extractVoiceUnits([{ text: "enciende la luz" }]), [command])).toBeNull();
     expect(matchCommand(extractVoiceUnits([{ text: "El comando es Omi enciende la luz" }]), [command])).toBeNull();
   });

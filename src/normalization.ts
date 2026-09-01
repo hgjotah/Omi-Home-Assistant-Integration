@@ -10,8 +10,13 @@ export function normalizeTranscript(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-export function hasOmiPrefix(normalized: string): boolean {
-  return normalized === "omi" || normalized.startsWith("omi ");
+export function commandPrefix(normalized: string): string {
+  return normalized.split(" ", 1)[0] ?? "";
+}
+
+export function hasCommandStructure(normalized: string): boolean {
+  const separator = normalized.indexOf(" ");
+  return separator > 0 && separator < normalized.length - 1;
 }
 
 function sameSpeaker(left: OmiSegment, right: OmiSegment): boolean {
@@ -23,8 +28,8 @@ function sameSpeaker(left: OmiSegment, right: OmiSegment): boolean {
 }
 
 /**
- * Builds only short, current voice units that start with Omi. It never scans a
- * persisted/full conversation and never uses is_user as authorization.
+ * Builds short, current voice units. Matching later requires the configured
+ * first word and the complete command; is_user is never used as authorization.
  */
 export function extractVoiceUnits(segments: OmiSegment[]): VoiceUnit[] {
   const recent = segments.slice(-8);
@@ -34,7 +39,7 @@ export function extractVoiceUnits(segments: OmiSegment[]): VoiceUnit[] {
     if (!first || typeof first.text !== "string") continue;
     let text = first.text.trim();
     let normalized = normalizeTranscript(text);
-    if (!hasOmiPrefix(normalized)) continue;
+    if (!normalized) continue;
     const start = Number.isFinite(first.start) ? first.start : undefined;
     let end = Number.isFinite(first.end) ? first.end : undefined;
     units.push({ text, normalized, ...(start === undefined ? {} : { start }), ...(end === undefined ? {} : { end }), ...(first.speaker ? { speaker: first.speaker } : {}) });
@@ -81,7 +86,8 @@ function distanceAtMostOne(left: string, right: string): number {
 }
 
 export function commandDistance(candidate: string, configured: string): number {
-  if (!hasOmiPrefix(candidate) || !hasOmiPrefix(configured)) return 2;
+  if (!hasCommandStructure(candidate) || !hasCommandStructure(configured)) return 2;
+  if (commandPrefix(candidate) !== commandPrefix(configured)) return 2;
   if (candidate === configured) return 0;
   // One character of STT tolerance only for a substantial, whole utterance.
   if (candidate.length < 12 || configured.length < 12) return 2;

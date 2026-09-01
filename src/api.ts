@@ -3,7 +3,7 @@ import { randomId, randomSecret } from "./crypto";
 import { CONNECTED_WINDOW_MS, createJob, publicJob, selectBridgeForUser } from "./database";
 import { parseActionInput } from "./homeAssistant";
 import { HttpError, cleanText, isRecord, json, rateLimit, clientKey, readJson } from "./http";
-import { hasOmiPrefix, normalizeTranscript } from "./normalization";
+import { hasCommandStructure, normalizeTranscript } from "./normalization";
 import type { BridgeRow, CommandRow, Env, JobRow, Session } from "./types";
 
 function escapeLike(value: string): string {
@@ -138,13 +138,11 @@ interface CommandInput {
 }
 
 function parseCommand(body: CommandInput): Omit<CommandRow, "id" | "uid" | "created_at" | "updated_at"> {
-  let phrase = cleanText(body.phrase, "phrase", 180);
-  let normalized = normalizeTranscript(phrase);
-  if (!hasOmiPrefix(normalized)) {
-    phrase = `Omi ${phrase}`;
-    normalized = normalizeTranscript(phrase);
+  const phrase = cleanText(body.phrase, "phrase", 180);
+  const normalized = normalizeTranscript(phrase);
+  if (!hasCommandStructure(normalized)) {
+    throw new HttpError(400, "El comando debe incluir una palabra de activación y una acción");
   }
-  if (normalized === "omi" || !hasOmiPrefix(normalized)) throw new HttpError(400, "El comando debe empezar por Omi y contener una acción");
   const action = parseActionInput(body);
   const entityName = cleanText(body.entity_name ?? action.entity_id, "entity_name", 255);
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw new HttpError(400, "enabled debe ser boolean");

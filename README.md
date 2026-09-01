@@ -17,7 +17,7 @@ Cloudflare **nunca** llama a una IP `192.168.x.x`. No hacen falta puertos abiert
 ## Funcionalidad
 
 - Webhook oficial Omi Real-Time Transcript: array JSON de segmentos y `uid`/`session_id` en la query.
-- Prefijo obligatorio `Omi` y matching completo, determinista y conservador; no usa LLM.
+- Primera palabra de activación configurable por comando y matching completo, determinista y conservador; no usa LLM.
 - Deduplicación de transcripciones incrementales por usuario, sesión, comando, tiempo de segmento y firma.
 - `is_user=false` no bloquea una orden: cualquier persona puede pronunciar un comando configurado.
 - Cola D1 multiusuario con jobs `pending → claimed → completed/failed`, expiración y recuperación tras reinicio del ESP32.
@@ -321,19 +321,19 @@ La caché viva solo se sustituye dentro de `complete`. En entidades, el Worker p
 1. Pulsa **Añadir comando**.
 2. Escribe en **Buscar entidad** `Luz habitación`, `light.habitacion` o `light`.
 3. Selecciona la entidad; no hay un selector gigante.
-4. En la frase escribe solo `enciende la luz`: el prefijo fijo muestra `Omi`.
+4. Escribe la frase completa. La primera palabra será la activación, por ejemplo `Casa enciende la luz` o `Jarvis enciende la luz`.
 5. Elige una acción real sincronizada, por ejemplo `light.turn_on`.
 6. Configura `brightness_pct`, `transition` u otros campos si Home Assistant los publica. Usa Modo avanzado para JSON.
 7. Pulsa **PROBAR ACCIÓN**. Es una ejecución real; para acciones sensibles aparece confirmación.
 8. Espera el resultado del ESP32 y guarda.
 
-Ahora di delante de Omi:
+Ahora di la frase configurada delante de Omi. Por ejemplo:
 
 ```text
-Omi, enciende la luz.
+Casa, enciende la luz.
 ```
 
-La puntuación, mayúsculas y tildes se normalizan. `enciende la luz` sin `Omi` no ejecuta. Tampoco se buscan substrings dentro de una conversación; solo unidades recientes que empiezan por Omi.
+La puntuación, mayúsculas y tildes se normalizan. `enciende la luz` sin la palabra configurada no ejecuta. Tampoco se buscan substrings dentro de una conversación: debe coincidir la unidad completa, empezando por la primera palabra guardada.
 
 ## 14. Simular el ESP32
 
@@ -435,7 +435,7 @@ Problemas frecuentes:
 | 401 del bridge | Regenera secreto y vuelve a guardarlo en `192.168.4.1`. |
 | 401 Home Assistant | Token incorrecto/revocado; crea otro en Perfil → Seguridad. |
 | Entidades antiguas tras sync | Mira el job: una sync incompleta conserva la caché anterior deliberadamente. |
-| Omi no ejecuta | La unidad debe empezar por `Omi` y coincidir casi exactamente con un comando activo. |
+| Omi no ejecuta | La unidad debe empezar por la primera palabra configurada y coincidir casi exactamente con un comando activo. |
 | Omi ejecuta una sola vez | Repeticiones con timing distinto se permiten; duplicados incrementales del mismo segmento se descartan. |
 | Pantalla `CLOUD ERROR` en 2028 | Actualiza la CA del firmware según `esp32/README.md`. |
 

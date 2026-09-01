@@ -18,4 +18,13 @@ describe("interfaz web", () => {
     expect(markup).not.toContain("const CSRF=\"</script>");
     expect(markup).toContain("\\u003c/script>");
   });
+
+  it("permite escribir la frase completa con una activación configurable", async () => {
+    const markup = await renderApp("csrf-test").text();
+
+    expect(markup).toContain("La primera palabra es configurable");
+    expect(markup).toContain('placeholder="Casa enciende la luz"');
+    expect(markup).not.toContain('<div class="prefix"><span>Omi</span>');
+    expect(markup).toContain("command?command.phrase:''");
+  });
 });

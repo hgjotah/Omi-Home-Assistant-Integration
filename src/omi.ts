@@ -1,5 +1,5 @@
 import { randomId, sha256, timingSafeEqual } from "./crypto";
-import { commandDistance, extractVoiceUnits, hasOmiPrefix, matchCommand, normalizeTranscript } from "./normalization";
+import { commandDistance, commandPrefix, extractVoiceUnits, matchCommand, normalizeTranscript } from "./normalization";
 import { HttpError, clientKey, isRecord, json, rateLimit, readJson } from "./http";
 import type { CommandRow, Env, OmiSegment, VoiceUnit } from "./types";
 
@@ -178,13 +178,14 @@ function payloadForLog(value: unknown, depth = 0): unknown {
   return safe;
 }
 
-function mergeIncrementalTranscript(previous: string, incoming: string): string {
+function mergeIncrementalTranscript(previous: string, incoming: string, commandPrefixes: Set<string>): string {
   const left = normalizeTranscript(previous);
   const right = normalizeTranscript(incoming);
   if (!left) return right;
-  if (!right || left === right || left.startsWith(`${right} `)) return left;
+  if (!right || left === right) return left;
   if (right.startsWith(`${left} `)) return right;
-  if (hasOmiPrefix(right)) return right;
+  if (commandPrefixes.has(commandPrefix(right))) return right;
+  if (left.startsWith(`${right} `)) return left;
 
   const leftWords = left.split(" ");
   const rightWords = right.split(" ");
@@ -244,6 +245,7 @@ async function accumulateTranscript(
   uid: string,
   sessionKey: string,
   extracted: ExtractedTranscript,
+  commandPrefixes: Set<string>,
   now: number,
 ): Promise<VoiceUnit> {
   const state = await env.DB.prepare(
@@ -254,7 +256,7 @@ async function accumulateTranscript(
   const active = recentState && (!recentState.speaker || !chunk.speaker || recentState.speaker === chunk.speaker)
     ? recentState
     : null;
-  const normalized = mergeIncrementalTranscript(active?.transcript ?? "", chunk.text);
+  const normalized = mergeIncrementalTranscript(active?.transcript ?? "", chunk.text, commandPrefixes);
   const start = active?.start ?? chunk.first.start ?? null;
   const end = chunk.last.end ?? active?.end ?? null;
   const speaker = active?.speaker ?? chunk.speaker;
@@ -282,12 +284,12 @@ async function accumulateTranscript(
   };
 }
 
-function uniqueVoiceUnits(extracted: ExtractedTranscript, accumulated: VoiceUnit): VoiceUnit[] {
+function uniqueVoiceUnits(extracted: ExtractedTranscript, accumulated: VoiceUnit, commandPrefixes: Set<string>): VoiceUnit[] {
   const units = [...extractVoiceUnits(extracted.segments), accumulated];
   const seen = new Set<string>();
   return units.filter((unit) => {
     const key = `${unit.normalized}|${unit.start ?? "none"}`;
-    if (!hasOmiPrefix(unit.normalized) || seen.has(key)) return false;
+    if (!commandPrefixes.has(commandPrefix(unit.normalized)) || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
@@ -347,9 +349,10 @@ export async function handleOmiWebhook(request: Request, env: Env): Promise<Resp
     .all<CommandRow>();
   if (!commands.results.length) return json({ ok: true, matched: false, reason: "no_commands" });
 
+  const commandPrefixes = new Set(commands.results.map((command) => commandPrefix(command.normalized_phrase)));
   const sessionKey = await resolveSessionKey(env, uid, suppliedSessionId, now);
-  const accumulated = await accumulateTranscript(env, uid, sessionKey, extracted, now);
-  const units = uniqueVoiceUnits(extracted, accumulated);
+  const accumulated = await accumulateTranscript(env, uid, sessionKey, extracted, commandPrefixes, now);
+  const units = uniqueVoiceUnits(extracted, accumulated, commandPrefixes);
   logMatches(units, commands.results);
   const matched = matchCommand(units, commands.results);
   if (!matched) {
