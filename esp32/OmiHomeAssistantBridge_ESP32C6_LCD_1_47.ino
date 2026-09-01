@@ -1,5 +1,5 @@
 /*
- * Omi Home Assistant Bridge 1.0.0
+ * Omi Home Assistant Bridge 1.0.1
  * Board: Waveshare ESP32-C6-LCD-1.47 (ST7789, 172x320)
  *
  * Home Assistant credentials stay in ESP32 Preferences. They are never sent
@@ -19,7 +19,7 @@
 #include <functional>
 #include <vector>
 
-static constexpr char FIRMWARE_VERSION[] = "1.0.0";
+static constexpr char FIRMWARE_VERSION[] = "1.0.1";
 static constexpr uint32_t POLL_INTERVAL_MS = 1500;
 static constexpr uint32_t HTTP_TIMEOUT_MS = 15000;
 static constexpr uint8_t LCD_MOSI = 6;
@@ -232,17 +232,47 @@ bool connectWiFi() {
 }
 
 bool workerPost(const String &path, const String &body, String &response, int &code) {
+  response = "";
+  code = 0;
   HTTPClient http;
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
-  if (!http.begin(workerClient, cfg.workerUrl + path)) return false;
+  if (!http.begin(workerClient, cfg.workerUrl + path)) {
+    code = -1;
+    response = "No se pudo iniciar la conexión HTTPS";
+    Serial.println(F("[Cloudflare]"));
+    Serial.println("POST " + path);
+    Serial.println(F("HTTP: -1"));
+    Serial.println(F("Response:"));
+    Serial.println(response);
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Bridge-ID", cfg.bridgeId);
   http.addHeader("Authorization", "Bearer " + cfg.bridgeSecret);
   code = http.POST(body);
   response = code > 0 ? http.getString() : "";
   http.end();
-  return code >= 200 && code < 300;
+  const bool ok = code >= 200 && code < 300;
+  if (!ok) {
+    Serial.println(F("[Cloudflare]"));
+    Serial.println("POST " + path);
+    Serial.print(F("HTTP: "));
+    Serial.println(code);
+    Serial.println(F("Response:"));
+    if (response.isEmpty()) Serial.println(F("(sin body)"));
+    else Serial.println(response);
+  }
+  return ok;
+}
+
+String cloudflareFailure(const String &path, int code, const String &response) {
+  String message = F("Cloudflare POST ");
+  message += path;
+  message += F(" HTTP ");
+  message += String(code);
+  if (!response.isEmpty()) message += ": " + response;
+  return message.substring(0, 900);
 }
 
 bool homeAssistantRequest(const String &method, const String &path, const String &body, String &response, int &code) {
@@ -284,7 +314,8 @@ void sendResult(const String &jobId, bool success, const String &message, int up
   workerPost("/api/bridge/result", body, response, code);
 }
 
-bool sendChunk(const String &path, const String &jobId, const std::vector<String> &items) {
+bool sendChunk(const String &path, const String &jobId, const std::vector<String> &items,
+               String &failure, int &failureCode) {
   String body = F("{\"job_id\":\"");
   body += jobId;
   body += F("\",\"items\":[");
@@ -295,17 +326,28 @@ bool sendChunk(const String &path, const String &jobId, const std::vector<String
   body += F("]}");
   String response;
   int code;
-  return workerPost(path, body, response, code);
+  const bool ok = workerPost(path, body, response, code);
+  if (!ok) {
+    failure = cloudflareFailure(path, code, response);
+    failureCode = code;
+  }
+  return ok;
 }
 
-bool syncMarker(const String &path, const String &jobId, int count = -1) {
+bool syncMarker(const String &path, const String &jobId, int count,
+                String &failure, int &failureCode) {
   JsonDocument document;
   document["job_id"] = jobId;
   if (count >= 0) document["count"] = count;
   String body, response;
   int code;
   serializeJson(document, body);
-  return workerPost(path, body, response, code);
+  const bool ok = workerPost(path, body, response, code);
+  if (!ok) {
+    failure = cloudflareFailure(path, code, response);
+    failureCode = code;
+  }
+  return ok;
 }
 
 bool streamTopLevelObjects(Stream &stream, const std::function<bool(const String &)> &consumer,
@@ -365,8 +407,10 @@ bool withHaArrayStream(const String &path, const std::function<bool(Stream &)> &
 }
 
 void syncEntities(const String &jobId) {
-  if (!syncMarker("/api/bridge/sync/entities/start", jobId)) {
-    sendResult(jobId, false, "No se pudo iniciar sync_entities"); return;
+  String failure;
+  int failureCode = 0;
+  if (!syncMarker("/api/bridge/sync/entities/start", jobId, -1, failure, failureCode)) {
+    sendResult(jobId, false, failure, failureCode > 0 ? failureCode : 0); return;
   }
   int count = 0, httpCode = 0;
   std::vector<String> chunk;
@@ -387,22 +431,29 @@ void syncEntities(const String &jobId) {
       chunk.push_back(encoded);
       count++;
       if (chunk.size() >= 12) {
-        if (!sendChunk("/api/bridge/sync/entities/chunk", jobId, chunk)) return false;
+        if (!sendChunk("/api/bridge/sync/entities/chunk", jobId, chunk, failure, failureCode)) return false;
         chunk.clear();
       }
       return true;
     }, 65536);
   }, httpCode);
-  if (ok && !chunk.empty()) ok = sendChunk("/api/bridge/sync/entities/chunk", jobId, chunk);
-  if (!ok || !syncMarker("/api/bridge/sync/entities/complete", jobId, count)) {
-    sendResult(jobId, false, "Fallo sincronizando entidades", httpCode); return;
+  if (ok && !chunk.empty()) ok = sendChunk("/api/bridge/sync/entities/chunk", jobId, chunk, failure, failureCode);
+  if (!ok) {
+    sendResult(jobId, false, failure.isEmpty() ? "Fallo leyendo entidades de Home Assistant" : failure,
+               failure.isEmpty() ? httpCode : (failureCode > 0 ? failureCode : 0));
+    return;
+  }
+  if (!syncMarker("/api/bridge/sync/entities/complete", jobId, count, failure, failureCode)) {
+    sendResult(jobId, false, failure, failureCode > 0 ? failureCode : 0); return;
   }
   drawStatus("ENTIDADES OK", 0x07E0);
 }
 
 void syncServices(const String &jobId) {
-  if (!syncMarker("/api/bridge/sync/services/start", jobId)) {
-    sendResult(jobId, false, "No se pudo iniciar sync_services"); return;
+  String failure;
+  int failureCode = 0;
+  if (!syncMarker("/api/bridge/sync/services/start", jobId, -1, failure, failureCode)) {
+    sendResult(jobId, false, failure, failureCode > 0 ? failureCode : 0); return;
   }
   int count = 0, httpCode = 0;
   std::vector<String> chunk;
@@ -426,16 +477,21 @@ void syncServices(const String &jobId) {
         chunk.push_back(encoded);
         count++;
         if (chunk.size() >= 8) {
-          if (!sendChunk("/api/bridge/sync/services/chunk", jobId, chunk)) return false;
+          if (!sendChunk("/api/bridge/sync/services/chunk", jobId, chunk, failure, failureCode)) return false;
           chunk.clear();
         }
       }
       return true;
     }, 196608);
   }, httpCode);
-  if (ok && !chunk.empty()) ok = sendChunk("/api/bridge/sync/services/chunk", jobId, chunk);
-  if (!ok || !syncMarker("/api/bridge/sync/services/complete", jobId, count)) {
-    sendResult(jobId, false, "Fallo sincronizando acciones", httpCode); return;
+  if (ok && !chunk.empty()) ok = sendChunk("/api/bridge/sync/services/chunk", jobId, chunk, failure, failureCode);
+  if (!ok) {
+    sendResult(jobId, false, failure.isEmpty() ? "Fallo leyendo acciones de Home Assistant" : failure,
+               failure.isEmpty() ? httpCode : (failureCode > 0 ? failureCode : 0));
+    return;
+  }
+  if (!syncMarker("/api/bridge/sync/services/complete", jobId, count, failure, failureCode)) {
+    sendResult(jobId, false, failure, failureCode > 0 ? failureCode : 0); return;
   }
   drawStatus("ACCIONES OK", 0x07E0);
 }

@@ -5,6 +5,7 @@ El sketch usa el pinout oficial del modelo **sin touch**:
 - LCD ST7789 172×320: MOSI GPIO6, SCLK GPIO7, CS GPIO14, DC GPIO15, RST GPIO21, BL GPIO22.
 - El portal local aparece como `Omi-HA-Setup`, contraseña `omi-ha-setup`, en `http://192.168.4.1`.
 - Polling normal: una única petición `POST /api/bridge/next` cada 1500 ms. No existe heartbeat adicional.
+- Firmware actual: `1.0.1`. Envía chunks de 12 entidades y 8 servicios.
 
 ## Dependencias Arduino
 
@@ -24,3 +25,7 @@ Home Assistant se espera en una URL HTTP privada tipo `http://192.168.1.124:8123
 ## Memoria durante sincronización
 
 Las entidades se analizan una a una desde el stream de `/api/states`; no se carga la respuesta completa. `/api/services` se procesa por dominios y conserva el objeto `fields` real. Se rechaza un objeto individual anormalmente grande en vez de agotar toda la RAM.
+
+## Errores Cloudflare por Serial
+
+Desde `1.0.1`, cualquier respuesta no 2xx conserva e imprime método, ruta, código HTTP y body completo. El detalle, truncado de forma segura, también se devuelve en `/api/bridge/result` para que aparezca en Diagnóstico. No se imprimen Bridge Secret, token de Home Assistant ni headers de autorización.

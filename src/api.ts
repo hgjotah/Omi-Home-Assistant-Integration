@@ -19,7 +19,7 @@ function parseServiceData(value: unknown): Record<string, unknown> {
 
 async function bootstrap(env: Env, uid: string): Promise<Response> {
   const now = Date.now();
-  const [bridges, commands, entityCount, commandCount, serviceCount, lastJobs] = await Promise.all([
+  const [bridges, commands, entityCount, commandCount, serviceCount, lastJobs, entitySync, serviceSync] = await Promise.all([
     env.DB.prepare(
       "SELECT id, bridge_id, enabled, last_seen, firmware_version, ip, rssi, ha_ok, created_at FROM bridges WHERE uid = ? ORDER BY created_at DESC",
     ).bind(uid).all<Record<string, unknown>>(),
@@ -36,6 +36,8 @@ async function bootstrap(env: Env, uid: string): Promise<Response> {
     env.DB.prepare("SELECT COUNT(*) AS count FROM commands WHERE uid = ?").bind(uid).first<{ count: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM service_cache WHERE uid = ?").bind(uid).first<{ count: number }>(),
     env.DB.prepare("SELECT * FROM jobs WHERE uid = ? ORDER BY created_at DESC LIMIT 10").bind(uid).all<JobRow>(),
+    env.DB.prepare("SELECT * FROM jobs WHERE uid = ? AND type = 'sync_entities' ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
+    env.DB.prepare("SELECT * FROM jobs WHERE uid = ? AND type = 'sync_services' ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
   ]);
   return json({
     ok: true,
@@ -53,6 +55,10 @@ async function bootstrap(env: Env, uid: string): Promise<Response> {
       entities: entityCount?.count ?? 0,
       commands: commandCount?.count ?? 0,
       services: serviceCount?.count ?? 0,
+    },
+    sync: {
+      entities: entitySync ? publicJob(entitySync) : null,
+      services: serviceSync ? publicJob(serviceSync) : null,
     },
     jobs: lastJobs.results.map(publicJob),
   });
@@ -236,11 +242,13 @@ async function getJob(env: Env, uid: string, jobId: string): Promise<Response> {
 }
 
 async function diagnostics(env: Env, uid: string): Promise<Response> {
-  const [user, bridge, job, actionJob] = await Promise.all([
+  const [user, bridge, job, actionJob, entitySync, serviceSync] = await Promise.all([
     env.DB.prepare("SELECT setup_completed, last_webhook_at, last_error FROM users WHERE uid = ?").bind(uid).first(),
     env.DB.prepare("SELECT bridge_id, last_seen, firmware_version, ip, rssi, ha_ok FROM bridges WHERE uid = ? ORDER BY last_seen DESC LIMIT 1").bind(uid).first(),
     env.DB.prepare("SELECT * FROM jobs WHERE uid = ? ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
     env.DB.prepare("SELECT * FROM jobs WHERE uid = ? AND type = 'call_service' ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
+    env.DB.prepare("SELECT * FROM jobs WHERE uid = ? AND type = 'sync_entities' ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
+    env.DB.prepare("SELECT * FROM jobs WHERE uid = ? AND type = 'sync_services' ORDER BY created_at DESC LIMIT 1").bind(uid).first<JobRow>(),
   ]);
   return json({
     ok: true,
@@ -250,6 +258,10 @@ async function diagnostics(env: Env, uid: string): Promise<Response> {
     bridge: bridge ? { ...bridge, connected: typeof bridge.last_seen === "number" && Date.now() - bridge.last_seen <= CONNECTED_WINDOW_MS } : null,
     last_job: job ? publicJob(job) : null,
     last_action: actionJob ? publicJob(actionJob) : null,
+    sync: {
+      entities: entitySync ? publicJob(entitySync) : null,
+      services: serviceSync ? publicJob(serviceSync) : null,
+    },
   });
 }
 

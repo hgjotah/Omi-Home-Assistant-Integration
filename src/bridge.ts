@@ -4,6 +4,7 @@ import { HttpError, cleanText, isRecord, json, optionalText, readJson } from "./
 import type { BridgeRow, Env, JobRow, JobType } from "./types";
 
 const SYNC_CHUNK_LIMIT = 100;
+const ENTITY_SYNC_BODY_LIMIT = 1_048_576;
 
 interface HeartbeatBody {
   firmware?: unknown;
@@ -90,9 +91,15 @@ export async function bridgeResult(request: Request, env: Env): Promise<Response
     ]);
   }
   if (!body.success) {
-    await env.DB.prepare("UPDATE users SET last_error = ?, updated_at = ? WHERE uid = ?")
-      .bind(error, now, bridge.uid)
-      .run();
+    const failureStatements = [
+      env.DB.prepare("UPDATE users SET last_error = ?, updated_at = ? WHERE uid = ?").bind(error, now, bridge.uid),
+    ];
+    if (job.type === "sync_entities") {
+      failureStatements.push(env.DB.prepare("DELETE FROM entity_sync_items WHERE job_id = ? AND uid = ?").bind(jobId, bridge.uid));
+    } else if (job.type === "sync_services") {
+      failureStatements.push(env.DB.prepare("DELETE FROM service_sync_items WHERE job_id = ? AND uid = ?").bind(jobId, bridge.uid));
+    }
+    await env.DB.batch(failureStatements);
   }
   return json({ ok: true, job: publicJob(updated) });
 }
@@ -113,21 +120,70 @@ async function syncStart(request: Request, env: Env, kind: "entities" | "service
   const jobId = cleanText(body.job_id, "job_id", 100);
   await requireSyncJob(env, bridge, jobId, kind === "entities" ? "sync_entities" : "sync_services");
   const table = kind === "entities" ? "entity_sync_items" : "service_sync_items";
-  await env.DB.prepare(`DELETE FROM ${table} WHERE job_id = ? AND uid = ?`).bind(jobId, bridge.uid).run();
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM ${table} WHERE job_id = ? AND uid = ?`).bind(jobId, bridge.uid),
+    env.DB.prepare(
+      `DELETE FROM ${table} WHERE uid = ? AND job_id IN (
+         SELECT id FROM jobs WHERE uid = ? AND status IN ('failed', 'expired')
+       )`,
+    ).bind(bridge.uid, bridge.uid),
+  ]);
   return json({ ok: true });
 }
 
-interface EntityItem {
-  entity_id?: unknown;
-  domain?: unknown;
-  state?: unknown;
-  friendly_name?: unknown;
-  icon?: unknown;
+interface SanitizedEntity {
+  entityId: string;
+  domain: string;
+  state: string;
+  friendlyName: string;
+  icon: string | null;
+}
+
+function entityLogId(raw: unknown): string {
+  if (!isRecord(raw) || typeof raw.entity_id !== "string") return "unknown";
+  const value = raw.entity_id.trim().replace(/[\r\n\t]/g, " ");
+  return value ? value.slice(0, 255) : "unknown";
+}
+
+function skipEntity(raw: unknown, reason: string): null {
+  console.warn("[ENTITY SYNC] Skipped entity", { entity_id: entityLogId(raw), reason });
+  return null;
+}
+
+function tolerantState(value: unknown): string {
+  if (value === null || value === undefined) return "unknown";
+  if (typeof value === "string") return value.slice(0, 500);
+  if (typeof value === "number" || typeof value === "boolean") return String(value).slice(0, 500);
+  try {
+    const encoded = JSON.stringify(value);
+    return typeof encoded === "string" && encoded.length > 0 ? encoded.slice(0, 500) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function sanitizeEntity(raw: unknown): SanitizedEntity | null {
+  if (!isRecord(raw)) return skipEntity(raw, "item is not an object");
+  if (typeof raw.entity_id !== "string") return skipEntity(raw, "entity_id is missing or is not a string");
+  const entityId = raw.entity_id.trim().toLowerCase();
+  if (!entityId) return skipEntity(raw, "entity_id is empty");
+  if (entityId.length > 255 || !/^[a-z0-9_]+\.[a-z0-9_]+$/.test(entityId)) {
+    return skipEntity(raw, "entity_id has an invalid Home Assistant format");
+  }
+
+  const friendlyCandidate = typeof raw.friendly_name === "string" ? raw.friendly_name.trim() : "";
+  return {
+    entityId,
+    domain: entityId.slice(0, entityId.indexOf(".")),
+    state: tolerantState(raw.state),
+    friendlyName: (friendlyCandidate || entityId).slice(0, 255),
+    icon: typeof raw.icon === "string" ? raw.icon.slice(0, 255) : null,
+  };
 }
 
 async function entityChunk(request: Request, env: Env): Promise<Response> {
   const bridge = await authenticateBridge(request, env);
-  const body = await readJson<{ job_id?: unknown; items?: unknown }>(request, 65_536);
+  const body = await readJson<{ job_id?: unknown; items?: unknown }>(request, ENTITY_SYNC_BODY_LIMIT);
   const jobId = cleanText(body.job_id, "job_id", 100);
   await requireSyncJob(env, bridge, jobId, "sync_entities");
   if (!Array.isArray(body.items) || body.items.length < 1 || body.items.length > SYNC_CHUNK_LIMIT) {
@@ -136,25 +192,22 @@ async function entityChunk(request: Request, env: Env): Promise<Response> {
   const now = Date.now();
   const statements: D1PreparedStatement[] = [];
   for (const raw of body.items) {
-    if (!isRecord(raw)) throw new HttpError(400, "Entidad no válida");
-    const item = raw as EntityItem;
-    const entityId = cleanText(item.entity_id, "entity_id", 255).toLowerCase();
-    const domain = cleanText(item.domain, "domain", 80).toLowerCase();
-    if (!/^[a-z0-9_]+\.[a-z0-9_]+$/.test(entityId) || entityId.split(".")[0] !== domain) {
-      throw new HttpError(400, "entity_id/domain no válidos");
-    }
-    const state = cleanText(item.state, "state", 500);
-    const friendlyName = cleanText(item.friendly_name ?? entityId, "friendly_name", 255);
-    const icon = optionalText(item.icon, "icon", 255);
+    const item = sanitizeEntity(raw);
+    if (!item) continue;
     statements.push(env.DB.prepare(
       `INSERT INTO entity_sync_items (job_id, uid, entity_id, domain, friendly_name, state, icon, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(job_id, entity_id) DO UPDATE SET domain = excluded.domain, friendly_name = excluded.friendly_name,
          state = excluded.state, icon = excluded.icon, updated_at = excluded.updated_at`,
-    ).bind(jobId, bridge.uid, entityId, domain, friendlyName, state, icon, now));
+    ).bind(jobId, bridge.uid, item.entityId, item.domain, item.friendlyName, item.state, item.icon, now));
   }
-  await env.DB.batch(statements);
-  return json({ ok: true, accepted: statements.length });
+  if (statements.length > 0) await env.DB.batch(statements);
+  return json({
+    ok: true,
+    received: body.items.length,
+    accepted: statements.length,
+    skipped: body.items.length - statements.length,
+  });
 }
 
 interface ServiceItem {
@@ -211,10 +264,18 @@ async function syncComplete(request: Request, env: Env, kind: "entities" | "serv
   const counted = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${staging} WHERE job_id = ? AND uid = ?`)
     .bind(jobId, bridge.uid)
     .first<{ count: number }>();
-  if ((counted?.count ?? 0) !== count) {
+  const synced = counted?.count ?? 0;
+  if (kind === "services" && synced !== count) {
     throw new HttpError(409, `Sincronización incompleta: se anunciaron ${count} y llegaron ${counted?.count ?? 0}`);
   }
+  if (kind === "entities" && count > 0 && synced === 0) {
+    throw new HttpError(422, "No se aceptó ninguna entidad; se conserva la caché anterior");
+  }
+  const skipped = kind === "entities" ? Math.max(0, count - synced) : 0;
   const now = Date.now();
+  const result = kind === "entities"
+    ? { synced, skipped, received: count }
+    : { count: synced, synced, skipped: 0, received: count };
   const statements = kind === "entities"
     ? [
         env.DB.prepare("DELETE FROM entity_cache WHERE uid = ?").bind(bridge.uid),
@@ -233,10 +294,10 @@ async function syncComplete(request: Request, env: Env, kind: "entities" | "serv
   statements.push(
     env.DB.prepare(
       "UPDATE jobs SET status = 'completed', completed_at = ?, result = ?, error = NULL WHERE id = ? AND bridge_id = ? AND uid = ? AND status = 'claimed'",
-    ).bind(now, JSON.stringify({ count }), jobId, bridge.bridge_id, bridge.uid),
+    ).bind(now, JSON.stringify(result), jobId, bridge.bridge_id, bridge.uid),
   );
   await env.DB.batch(statements);
-  return json({ ok: true, count });
+  return json({ ok: true, ...result });
 }
 
 export async function handleBridgeRoute(request: Request, env: Env, pathname: string): Promise<Response> {

@@ -314,7 +314,7 @@ El firmware valida el certificado HTTPS de `workers.dev`, consulta Cloudflare ex
 4. Se crean dos jobs: `sync_entities` y `sync_services`.
 5. El ESP32 transmite los datos por chunks.
 
-La caché viva solo se sustituye en `complete` si el número recibido coincide. Si se corta la corriente a mitad, los datos anteriores siguen intactos. Una entidad o servicio desaparecido no borra su comando; la web lo marca como **Entidad no disponible** o **Acción no disponible**.
+La caché viva solo se sustituye dentro de `complete`. En entidades, el Worker publica todas las filas aceptadas y contabiliza las ignoradas; en servicios se mantiene el conteo exacto. Si se corta la corriente a mitad, los datos anteriores siguen intactos. Una entidad o servicio desaparecido no borra su comando; la web lo marca como **Entidad no disponible** o **Acción no disponible**.
 
 ## 13. Crear y probar el primer comando
 
@@ -410,6 +410,20 @@ Abre `/diagnostics` con una sesión válida o la pestaña **Diagnóstico**. Comp
 4. **Último webhook Omi**: si nunca aparece, revisa Trigger Event, Webhook URL, `OMI_WEBHOOK_TOKEN` y Developer Mode.
 5. **Último job**: `pending` significa que el ESP32 no lo ha recogido; `claimed`, que lo recogió; `failed`, que devolvió un error; `expired`, que llegó tarde.
 6. **Última acción**: revisa HTTP upstream y el mensaje del firmware.
+
+La pantalla muestra por separado la última sincronización de **Entidades** y la de **Acciones/servicios**. Un éxito de servicios nunca oculta un fallo de entidades. Para observar los requests y avisos de entidades ignoradas:
+
+```powershell
+npx wrangler tail
+```
+
+Después de una sincronización, comprueba el número real publicado en la caché:
+
+```powershell
+npx wrangler d1 execute omi-home-assistant-db --remote --command "SELECT COUNT(*) AS entidades FROM entity_cache;"
+```
+
+El resultado debería aproximarse al número de entidades de Home Assistant. Una entidad inválida se registra como `[ENTITY SYNC] Skipped entity`, pero no aborta las demás. El job completado informa `synced` y `skipped`; staging solo reemplaza la caché viva al finalizar correctamente.
 
 Problemas frecuentes:
 
