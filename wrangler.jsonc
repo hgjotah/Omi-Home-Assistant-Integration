@@ -17,6 +17,7 @@
     {
       "binding": "DB",
       "database_name": "omi-home-assistant-db",
+      "database_id": "3993c61c-c3cb-43dd-af22-6a68991bf60f",
       "migrations_dir": "migrations"
     }
   ]
